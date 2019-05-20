@@ -1,0 +1,858 @@
+---
+title: "ZipCode Profitability Analysis using Airbnb & Zillow"
+author: "Husain, Syed Imad"
+date: "20th March, 2019"
+output: 
+  html_document:
+    code_folding: hide
+    toc: yes # table of content true
+    toc_depth: 1  # upto three depths of headings (specified by #, ## and ###)
+    number_sections: true  ## if you want number sections at each table header
+    theme: united  # many options for theme, this one is my favorite.
+    highlight: tango  # specifies the syntax highlighting style
+urlcolor: blue
+linkcolor: red
+always_allow_html: yes
+---
+<style type="text/css">
+
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+body{ /* Normal  */
+      font-size: 18px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 38px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 28px;
+  color: DarkBlue;
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 18px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 18px;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = F, warning = F)
+```
+
+# Executive Summary
+
+*This document details the steps performed to arrive at the final recommendation. Based on the Break Even Period (BEP, number of months required to recover cost of property), we recommend investing in the Zipcodes **11215, 11231, 11217 & 10025** . These results apply to short term stay properties with 2 bedrooms in New York City. Initially, we performed Data Quality Check and identified important factors for assessing investment potential, followed by Exploratory data analysis to study the trends. Eventually, we defined customized Business Metrics and analyzed the summarized BEP to come up with our recommendations. The code written is highly scalable and is built for reusability.*
+
+# Problem Statement
+
+You are consulting for a real estate company that has a niche in purchasing properties to rent out short-term as part of their business model specifically within New York City.  The real estate company has already concluded that two bedroom properties are the most profitable; however, they do not know which zip codes are the best to invest in.    
+
+The real estate company has engaged your firm to build out a data product and provide your conclusions to help them understand which zip codes would generate the most profit on short term rentals within New York City. You will be looking at publicly available data from Zillow and AirBnB:
+
+* Cost data: Zillow provides us an estimate of value for two-bedroom properties
+* Revenue data: AirBnB is the medium through which the investor plans to lease out their investment property. Fortunately for you, we are able to see how much properties in certain neighborhoods rent out for in New York City
+* You can assume an occupancy rate of 75% or you can come up with your own model to calculate occupancy; just let us know how you came to that calculation   
+
+After meeting with the strategy team, you’ve got an idea of where to start, key concerns, and how you can help this real estate company with the market data while keeping the following assumptions in mind:
+
+* The investor will pay for the property in cash (i.e. no mortgage/interest rate will need to be accounted for).
+* The time value of money discount rate is 0% (i.e. $1 today is worth the same 100 years from now).
+* All properties and all square feet within each locale can be assumed to be homogeneous (i.e. a 1000 square foot property in a locale such as Bronx or Manhattan generates twice the revenue and costs twice as much as any other 500 square foot property within that same locale.)
+
+
+# R Environment Setup
+
+The following code chunk will install and load required R packages. The following packages have been used throughout the analysis for various purposes - 
+
+*   readr, tidyverse - Data Manipulation
+*   ggplot2, plotly - Visualizations 
+*   kableExtra - Formatted Tabular Outputs
+
+```{r pkg_func, include = T}
+pkg.instl <- function(x) {
+  if (!requireNamespace(x, quietly = TRUE))
+    install.packages(x)
+}
+```
+
+```{r load_pkgs, include=F, results = "hide",evall = T}
+req.pkg <- c("readr","ggplot2","tidyverse","plotly","kableExtra","float",
+             "reshape","magrittr", "httpuv" )
+
+pkg.instl <- function(x) {
+  if (!requireNamespace(x, quietly = TRUE))
+    install.packages(x)
+}
+
+invisible(lapply(req.pkg, pkg.instl)) # install missing packages
+invisible(lapply(req.pkg, library, character.only = T )) # load packages 
+```
+
+# Data Processing
+
+Based on my experience, DQ checks and Data Processing are highly iterative processes where the former feeds the latter; however, to have a clear objective in mind about the final outcome is the starting step. This report not only documents my code and processes, but it is also a sequential narration of my logical thinking
+
+## Import Data
+
+First things first, lets import the data. The following code chunk contains functions for easing data loading
+
+```{r imp_func, include=T}
+
+imp <- function(x) {
+        suppressMessages(df <- as.data.frame(read_csv(x)))
+        cat(dim(df))
+        return(df)
+}
+
+head.cust <- function(x) {
+  kable(head(x))  %>%
+  kable_styling(bootstrap_options = c("responsive","striped")) %>%
+  scroll_box(width = "100%", height = "200px")
+}
+```
+
+* For Airbnb - Revenue Data,
+```{r imp_air, include=T}
+listing <- imp("listings.csv")
+head.cust(listing)
+```
+
+* For Zillow - Cost Data,
+```{r imp_zil, include=T}
+zhvi <- imp("Zip_Zhvi_2bedroom.csv")
+head.cust(zhvi)
+```
+
+## Joining & Filtering Criteria
+
+Based on preliminary data exploration and task requirements, we have 
+
+### Identification
+
+* Joining 
+    + Airbnb - zipcode
+    + Zillow - RegionName
+  
+* Filtering
+    + Airbnb
+        1. bedrooms = 2, given requirement
+        2. minimum_nights < 7, to ensure short term stay
+    + Zillow
+        1. City = 'New York'
+
+### Data Quality Check
+
+* First we check if we have duplicates in the data and what is the grain of information. Below code chunk tells us that there are no duplicates and that Listing data is at the level of Property Listings whereas Zhvi data is at the level of zipcodes
+
+```{r unique.check, include = T}
+print("Duplicate rows in Listing Dataset")
+nrow(listing)-nrow(unique(listing))
+print("Duplicate rows in Zhvi Dataset")
+nrow(zhvi)-nrow(unique(zhvi))
+print("Duplicates in the primary key 'id' for Listing")
+nrow(listing) - length(unique(listing$id))
+print("Duplicates in the primary key 'RegionName' for Zhvi")
+nrow(zhvi)-length(unique(zhvi$RegionName))
+```
+
+* Airbnb: Zipcode - 
+Below code chunk tells us the number of missing values
+
+```{r miss.air.zip, include=T}
+listing$zipcode %>% 
+  is.na() %>% 
+  sum() %>% cat()
+
+```
+
+Since we know that Zipcode is a 5 digits code, we check for irregularities. We notice that there are values in this field which do not adhere to pattern
+
+```{r bad.air.zip, include=T}
+listing$zipcode %>% 
+  nchar() %>% 
+  table %>%
+  kable(col.names = c("size","Frequency")) %>% 
+  kable_styling(bootstrap_options = c("responsive","striped")) 
+
+```
+
+* Airbnb: bedrooms - 
+Below code chunk tells us the number of missing values. There are some missing values
+
+```{r miss.air.bed, include=T}
+listing$bedrooms %>% 
+  is.na() %>% 
+  sum() %>% cat()
+
+```
+
+Since we know that Bedroom is numeric, we check for irregularities. We found none
+
+```{r bad.air.bed, include=T}
+listing$bedrooms %>% 
+  sapply(function(x) is.numeric(x)) %>% sum() - nrow(listing) 
+
+```
+
+* Airbnb: Minimum Nights - 
+Below code chunk tells us the number of missing values. There are no missing values
+
+```{r miss.air.minnight, include=T}
+listing$minimum_nights %>% 
+  is.na() %>% 
+  sum() %>% cat()
+
+```
+
+We also check if values are non-numeric
+
+```{r bad.air.minnight, include=T}
+listing$minimum_nights %>% 
+  sapply(function(x) is.numeric(x)) %>% sum() - nrow(listing) 
+```
+
+* Zillow - RegionName
+Below code chunk tells us the number of missing values. We notice no missing values
+
+```{r miss.zil.zip, include=T}
+zhvi$RegionName %>% 
+  is.na() %>% 
+  sum() %>% cat()
+
+```
+
+Since we know that Zipcode is a 5 digit code, we check for irregularities. We notice that there are no bad values
+
+```{r bad.zil.zip, include=T}
+zhvi$RegionName %>% 
+  nchar() %>% 
+  table %>%
+  kable(col.names = c("size","Frequency")) %>% 
+  kable_styling(bootstrap_options = c("responsive","striped")) 
+
+```
+
+* Zillow - City
+Below code chunk tells us the number of missing values. We notice no missing values
+
+```{r miss.zil.city, include=T}
+zhvi$City %>% 
+  is.na() %>% 
+  sum() %>% cat()
+```
+
+We also check if values have different cases or not. Since we know the total number of values, a different number would indicate an issue. We found no issues with pattern but found multiple inconsistencies with the values on further exploration. For example New York is sometimes listed as 'NY', 'new york new york', etc.
+
+```{r bad.zil.city, include=T}
+nrow(zhvi) - sum(tolower(zhvi$City)==zhvi$City)
+```
+
+* Testing the join
+Since we know that for some aspect of our analysis, we will have to join the data sets, we test if there are zipcodes which are present in Zillow & not in Airbnb. Doing it the other way round will be very difficult because there are many names by which the New York City is represented. Indeed, we observe that not all Zillow zipcodes are present in Airbnb data
+
+```{r test.join, include = T}
+listing.zip <- listing %>% 
+  filter(bedrooms==2 & minimum_nights < 7 ) %>%
+  select(zipcode) %>%  unique() %>%
+  sapply(function(x) substring(x,1,5))  %>% as.data.frame
+
+zhvi.zip <- zhvi %>%
+  filter(trimws(tolower(City)) == 'new york')  %>%
+  select(RegionName) %>%  unique() %>% as.data.frame
+
+print(paste("Number of distinct zipcodes  based on bedrooms and minimum nights in listing",nrow(listing.zip)-sum(is.na(listing.zip)) ))
+print(paste("Number of distinct zipcodes in zhvi",nrow(zhvi.zip) ))
+
+names(listing.zip) <- "x" # assigning same name to both vectors for intersect()
+names(zhvi.zip) <- "x" 
+
+print(paste("matching zipcodes in both",
+            suppressWarnings(intersect(listing.zip,zhvi.zip)) %>% nrow() )) 
+```
+
+### Data Pre-processing
+
+Key takeaways from previous step which will be the basis for this step are -
+
+* subset first 5 characters for zipcodes in Airbnb and remove missing or other irregular values
+* Filter both datasets based on pre-defined requirement to reduce volume 
+
+```{r cleaning1, include = T}
+listing$zipcode <- substring(listing$zipcode,1,5) # regularize zip in Listing
+zhvi$City <- trimws(tolower(zhvi$City))  # regularize city  in zhvi
+
+air_sub <- listing %>% select(names(.)) %>% 
+  filter( bedrooms == 2 & # this takes care of missing values as well
+          zipcode %in% zhvi.zip$x  # this takes care of missing values as well
+        )
+
+zil_sub <- zhvi %>% select(names(.)) %>% 
+  filter( City == "new york") 
+
+print(paste("Dimensions of cleaned Listing subset:",
+             "Rows -",dim(air_sub)[1],"Columns -",dim(air_sub)[2]))  
+print(paste("Dimensions of cleaned zhvi subset:",
+             "Rows -",dim(zil_sub)[1],"Columns -",dim(zil_sub)[2]))  
+
+```
+
+## Identifying Relevant Factors & Data Quality Check
+In the previous steps, we have arrived at the subset of datasets for listing & zhvi.
+In this section, we will be talking about the Important factors(variables) to retain from each dataset
+
+
+* Airbnb - Listing - Revenue Data:
+    + neighbourhood_group_cleansed - Name of the area where the property is located
+    + zipcode - Zip code where the property is located
+    + bedrooms - Indicates the number of bedrooms within the property
+    + square_feet -	Square footage of the property or space for rent
+    + price -	Price the host is charging to stay per night
+    + minimum_nights - Minimum nights the host is willing to rent out the property
+    + availability_30 - Number of days the property is available for rent within 30 days
+    + review_scores_rating - Overall score given based on accuracy, cleanliness, check-in, communication, location, and value
+
+* Missing Values in Listing Subset - Here we notice that only 'review_scores_rating' and 'square_feet' have missing values. However, 'square_feet' has too many missing values and will be removed from final subset in subsequent steps
+
+```{r miss.air.sub, include = T}
+imp.var.air <- c("neighbourhood_group_cleansed","square_feet","price",
+                 "minimum_nights","availability_30","review_scores_rating")
+
+air_sub %>% select(imp.var.air) %>% 
+  sapply(function(x) sum(is.na(x))) %>% kable() %>%
+  kable_styling(bootstrap_options = c("responsive","striped")) %>%
+  scroll_box(width = "100%", height = "200px")
+
+```
+
+
+* Bad Values in Listing Subset - Here we notice that we will have to transform Price into numeric variable by removing '$' & ',' . Rest all variables look good enough 
+
+```{r bad.air.sub,include = T,results='asis'}
+for(i in 1:length(imp.var.air)) {
+  cat('\n')
+  cat(imp.var.air[i])
+  cat('\n')
+  air_sub[,imp.var.air[i]] %>%
+  table() %>%
+  as.data.frame() %>% 
+  arrange(desc(Freq)) %>%
+  kable() %>%  
+  kable_styling(bootstrap_options = c("responsive","striped")) %>%
+  scroll_box(width = "100%", height = "200px") %>% print()
+  cat('\n')
+}
+```
+
+
+* Zillow - zhvi - Cost Data:
+    + RegionName	Zip code of where the property is located
+    + City - City of where the property is located
+    + SizeRank - Population of the area; the lower the number the greater the population 
+    + Median Price columns - To decide which ones to pick, we will check how many missing values they have and pick a set of columns which is continous and has minimum missing values. We observe that there are no missing values from 2007-06 to 2017-06 and these are the columns which we will be using for further analysis
+
+```{r bad.prc.zil, include = T}
+imp.var.zil <- c("RegionID","RegionName","City","State","Metro","CountyName",
+                 "SizeRank")
+zil_sub %>% select(-imp.var.zil) %>% 
+  sapply(function(x) sum(is.na(x))) %>% kable() %>%
+  kable_styling(bootstrap_options = c("responsive","striped")) %>%
+  scroll_box(width = "100%", height = "200px")
+
+```
+
+* Missing Values in Zillow Subset - There seems to be no problem with missing values in this case. 
+
+```{r miss.air.zil, include = T}
+imp.var.zil <- c("RegionName","City","SizeRank")
+zil_sub %>% select(imp.var.zil) %>% 
+  sapply(function(x) sum(is.na(x))) %>% kable() %>%
+  kable_styling(bootstrap_options = c("responsive","striped")) %>%
+  scroll_box(width = "100%", height = "200px")
+
+```
+
+* Bad Values in Zillow Subset - There seems to be no problem of bad values in the subset. We have also checked that there are no negative prices in the data
+
+## Finalized Datasets
+We have 3 datasets that will be used in the subsequent steps. 
+
+* Air Subset - A subset of Listing Revenue data. Below code chunk introduces a function 'subset_air' which requires a dataframe, number of bedrooms, list of relevant zipcodes & min number of nights per stay to create a subset of the Listing dataset which can be directly used in future analyses when we have new/enriched data 
+```{r air.sub,include= T}
+subset_air <- function(df,bedroom,ziplist,min_night) {
+df$zipcode <- substring(df$zipcode,1,5) # regularize zip in listing
+df$price <- df$price %>% # regularize price  in listing
+            sapply(function(x) gsub('\\,', '',x)) %>% #remove ,
+            sapply(function(x) gsub('\\$','',x) ) %>%  #remove $
+            as.numeric() #convert to number
+df$review_scores_rating %<>%  replace(.,is.na(.)==1,0) #NA handling rvw scr rt
+df$minimum_nights %<>%  replace(.,is.na(.)==1,0) #NA handling min night
+df$availability_30 %<>%  replace(.,is.na(.)==1,0) #NA handling availability_30
+
+imp.var.air <- c("neighbourhood_group_cleansed","bedrooms","price",
+                "minimum_nights","availability_30","review_scores_rating",
+                 "zipcode","city")
+x <- df %>% select(imp.var.air)  %>% 
+  filter( bedrooms == bedroom & # this takes care of missing values as well
+          zipcode %in% ziplist & #remove unwanted zipcodes
+          minimum_nights < min_night & # ensure short term stay
+          replace(price,is.na(price),0) > 0  
+        ) 
+return(x)
+    
+  }
+```
+
+```{r air.sub.call, inlude = T}
+air_sub <- subset_air(listing,2,zhvi.zip$x,7)
+print(paste("Dimensions of cleaned subset of Listing :",
+             "Rows -",dim(air_sub)[1],"Columns -",dim(air_sub)[2])) 
+head.cust(air_sub)
+```
+
+
+* Zil Subset - A subset of Zillow Pricing data. Similarly, to create a subset of Zillow data, we introduce the function 'subset_zil'. Here we unpivot the data i.e. for analysis purposes, we convert YYYY_MM columns in rows using melt() function
+
+```{r zil.sub, include = T}
+subset_zil <- function(df,cit) {
+
+df$RegionName <- substring(df$RegionName,1,5) # regularize zip in zhvi
+df$City <- trimws(tolower(df$City))  # regularize city  in zhvi
+df$SizeRank %<>%  replace(.,is.na(.)==1,0) #NA handling rvw scr rt
+imp.var.zil <- c("RegionName","City","SizeRank")
+yyyymm <- c("2007-06","2017-06") # define period for fetching median pricing
+
+f.s <- which(names(df)==yyyymm[1])
+f.e <- which(names(df)==yyyymm[2])
+
+x <- subset(df,select = c(2,3,7,f.s:f.e))
+
+
+x <- x %>% select(names(.))  %>% 
+  filter( City == cit ) %>% as.data.frame()
+# this takes care of missing values as well 
+
+x <- melt(x,id=c("RegionName","City","SizeRank")) # unpivot columns for analysis
+names(x) <- c("Zipcode","City","SizeRank","YYYY_MM","Med_Price")
+return(x)
+}
+```
+
+```{r zil.sub.call, include = T}
+zil_sub <- subset_zil(zhvi,'new york')
+print(paste("Dimensions of cleaned subset of zhvi:",
+             "Rows -",dim(zil_sub)[1],"Columns -",dim(zil_sub)[2])) 
+head.cust(zil_sub)
+```
+
+* Combined dataset - The joined data set is created through the function subset_com which takes Listing Subset, Joining variable in Listing, Zillow Subset & Joining variable in Zillow, respectively. The output is a combined dataset with all the columns in both subsets. Additionally, we have introduced two keys in this dataset because the grain of data is different in both subsets. Listing Subset is at Property level whereas Zillow Subset is Zipcode, YYYYMM level. If we do not include the keys, it may become difficult to subset the combined dataset for different analyses. This will happen because of the many-to-many join since the joining criterion is Zipcode and both the subsets are at a lower grain/level than that
+
+```{r joining, include = T}
+subset_com <- function(x1,x2,y1,y2) {
+ x1$id <- seq(1,nrow(x1),1)
+  y1$id <- seq(1,nrow(y1),1)
+  names(y1) <- gsub(y2, x2, names(y1))
+ # y1 <- rename(y1, c(paste0(y2) = paste0(x2)))
+ # z <- merge(x1, y1 ,by.x  = x2, by.y = y2, all.x ) %>% as.data.frame()
+  z <- inner_join(x1, y1, by = x2, copy = T, keep = T,
+             suffix = c(".air", ".zil"))
+  return(z)
+}
+
+```
+
+```{r calling.subset_com, include = T}
+joined <- subset_com(air_sub,"zipcode",zil_sub,"Zipcode")
+
+print(paste("Dimensions of cleaned subset of zhvi:",
+             "Rows -",dim(joined)[1],"Columns -",dim(joined)[2])) 
+head.cust(joined)
+```
+
+# Exploratory Data Analysis
+I sliced and diced the data to observe trends based on different attributes
+
+* **Averaged Median Price Time series by Neighborhood**  - We visualize the trend of Averaged Median price over Year from 2007 to 2017 and notice that starting 2012, the trend has been mostly upward with Manhattan having the highest Averaged Median Prices
+
+```{r plot0, include = T}
+plot0 <-  joined %>%
+          mutate(Year = substring(YYYY_MM,1,4)) %>% 
+          select(Year,neighbourhood_group_cleansed,Med_Price) %>% unique() %>% 
+          group_by(Year,neighbourhood_group_cleansed) %>%
+          summarize(price = mean(Med_Price)) %>% 
+                        ggplot(aes(x = Year,
+                                 y = price,
+                                 color = neighbourhood_group_cleansed
+                                ,group = neighbourhood_group_cleansed
+)) + geom_point(size = 1.5, alpha = 0.9) +
+  geom_line(size = 0.5, alpha = 0.6) +
+  scale_y_continuous(name ="Average Median Price", labels = scales::comma) +
+  scale_x_discrete(name ="Years") +
+  scale_fill_discrete(name = "Neighbourhood")
+
+ggplotly(plot0 , width = 1200,height = 600)
+```
+
+* **Median Price Time Series by ZipCode** - We visualize the trend of Median price from 2007-06 to 2017-06 at a more granular level i.e. Year & Month. I notice that for most of the Zipcodes, the trends has mostly been upwards with Zip 10013 leading the lot
+
+```{r plot1, include = T}
+#generating custom labels for the graph below
+m <- unique(zil_sub$YYYY_MM) %>% as.character()
+n <- rep(' ',length(m))
+i <- 1 ; for (j in 1:11) {n[i] <- m[i]; i <- i + 12;}  
+
+#actual code for the graph
+plot1 <- zil_sub %>%  ggplot(aes(x = YYYY_MM,
+                                 y = Med_Price,
+                                 color = Zipcode,
+                                 group = Zipcode
+)) + geom_point(size = 0.5, alpha = 0.6) + geom_line(size = 0.5, alpha = 0.6) +
+  scale_y_continuous(name ="Median Price", labels = scales::comma) +
+  scale_x_discrete(name ="Years - Month", 
+              labels = n) 
+
+ggplotly(plot1,width = 1200,height = 600)
+```
+
+* **Average Median Price Variation** - The previous viz is a little crowded for us to keenly observe trends. I plotted the below graph to understand the trend in variation of Prices. It is a fair assumption that Median Prices have constantly increased since 2013 and we may not be wrong in considering the latest available Median Prices for the Zipcodes to perform the profitability analysis 
+
+```{r plot2, include = T}
+plot2 <-  zil_sub %>%
+          mutate(Year = substring(YYYY_MM,1,4)) %>% 
+          select(Year,Zipcode,Med_Price) %>% 
+          group_by(Year,Zipcode) %>%
+          summarize(price = mean(Med_Price)) %>% 
+                        ggplot(aes(x = Year,
+                                 y = price,
+                                 color = Zipcode
+                                ,group = Zipcode
+)) + geom_point(size = 1.5, alpha = 0.9) +
+  geom_line(size = 0.5, alpha = 0.6) +
+  scale_y_continuous(name ="Average Median Price", labels = scales::comma) +
+  scale_x_discrete(name ="Years")
+
+ggplotly(plot2 , width = 1200,height = 600)
+```
+
+* **Variation in Correlation between SizeRank & Median Price by ZipCodes** - Here we notice how the Median Price varies for different SizeRanks. Zipcodes with a lower size-rank undergoes larger variation than the zipcodes with higher size-rank. Also, the Median Prices are generally higher for lower Size Ranks. Press the *PLAY* button at the bottom of the grpah to view animation
+
+```{r plot3, include = T}
+plot3 <-  zil_sub %>%
+          select(YYYY_MM,Zipcode,Med_Price,SizeRank) %>% 
+                                 ggplot(aes(x = SizeRank,
+                                 y = Med_Price,
+                                 color = Zipcode
+                               #  ,group = Zipcode
+)) + geom_point(size = 2, alpha = 1,aes(frame = YYYY_MM)) +
+ # geom_line(size = 0.5, alpha = 0.6) +
+  scale_y_continuous(name = "Median Price", labels = scales::comma) +
+  scale_x_continuous(name = "Size Rank") 
+ 
+ggplotly(plot3, width = 1200,height = 600)
+```
+
+*  **Distribution of Price Per Night by Neighborhood**  - We notice that Manhattan has the highest Mean Price per Night amongst all negihbourhoods which makes it the most likely candidate for investing. However, it also has the highest variability which contributes to higher risk factors. From our earlier graph, it also follows that Manhattan has the highest Average Median Prices as well 
+
+```{r plot4, include = T}
+
+plot4 <-  air_sub %>%
+          select(names(.)) %>% 
+                             ggplot(aes(x = price,
+                                 fill = neighbourhood_group_cleansed
+)) + geom_density( alpha = 0.4) +
+ # geom_line(size = 0.5, alpha = 0.6) +
+  scale_y_continuous(name = "Density") +
+  scale_x_continuous(name = "Price per Night",
+                     limits = quantile(air_sub$price, c(0, 0.99))) +
+  scale_fill_discrete(name = "Neighbourhood")
+
+ggplotly(plot4, width = 1200,height = 600)
+```
+
+* **Distribution of Price per Night by Zipcode and Neighborhood**  - We observe that some of the Zipcodes like 10013 have very high variability which makes them bad investment opportunities because of high risk on returns. However, the highest median Price per Night is observed by 10011 which has a lower variability then 10013 indicating that it is a good choice for investment 
+
+```{r plot5, include = T}
+plot5 <-  air_sub %>%
+          select(names(.)) %>% 
+                             ggplot(aes(x = zipcode,
+                                        y = price,
+                                        fill = neighbourhood_group_cleansed
+)) + geom_boxplot() +
+
+ scale_y_continuous(name = "price Per Night",
+                    limits = quantile(air_sub$price, c(0, 0.99))) +
+ scale_fill_discrete(name = "Neighbourhood") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplotly(plot5,width = 1200, height = 600) 
+```
+
+* **Correlation between Review Scores & Price per Night by Neighborhood**  - We notice that mostly we have review scores on the higher side of the spectrum which makes inferences based on this correlation susceptible to bias. However, we also observe that mostly higher prices occur when we have higher Review scores. Since there is a lot of overlapping data points, to better observe the data, we have provided the reader with a slider filter to distinctly view one Neighborhood  at a time
+
+```{r plot6, include = T}
+plot6 <-  air_sub %>%
+          select(names(.)) %>%  
+                             ggplot(aes(x = review_scores_rating,
+                                        y = price,
+                                 fill = neighbourhood_group_cleansed
+                                 
+)) + geom_point( alpha = 0.9, aes(frame = neighbourhood_group_cleansed)) +
+ # geom_line(size = 0.5, alpha = 0.6) +
+ scale_y_continuous(name = "Price per Night",
+                    limits = quantile(air_sub$price, c(0, 0.99))) +
+  scale_x_continuous(name = "Reivew Score") +
+  scale_fill_discrete(name = "Neighbourhood") +
+   theme(legend.position = "none") 
+
+ggplotly(plot6,width = 1200, height = 600)
+```
+
+* **Distribution of Review Scores by Zipcode and Neighborhood**  - We observe that some of the Zipcodes like 10128 have very high variability which makes them bad investment opportunities because of high risk on returns. This graph is important for us to understand the importance of Review Scores in the bigger picture of making investment decisions. One way could be to vary the Occupancy rate as the review score varies
+
+```{r plot7, include = T}
+plot7 <-  air_sub %>%
+          select(names(.)) %>% filter(review_scores_rating != 0) %>% 
+                             ggplot(aes(x = zipcode,
+                                        y = review_scores_rating,
+                                        fill = neighbourhood_group_cleansed
+)) + geom_boxplot() +
+
+ scale_y_continuous(name = "Review Scores",
+               limits = quantile(air_sub$review_scores_rating, c(0, 0.99))) +
+ scale_fill_discrete(name = "Neighbourhood") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplotly(plot7,width = 1200, height = 600) 
+```
+
+* **Distribution of Total number of Properties by Neighborhood & Zipcode** - Most of the properties are present in Manhattan with zipcode 10003 having the highest number of them
+
+```{r plot8, include = T}
+plot8 <-  air_sub %>%
+          select(names(.)) %>% 
+                             ggplot(aes(x = zipcode,
+                                        fill = neighbourhood_group_cleansed,
+                                        group = neighbourhood_group_cleansed
+)) + geom_bar() +
+
+ scale_y_continuous(name = "Count of Properties") +
+ scale_fill_discrete(name = "Neighbourhood") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplotly(plot8,width = 1200, height = 600) 
+```
+
+* **Distribution of Occupancy by Neighborhood** - We notice that Manhattan has the highest density of Occupancy = 30 which is a good thing. However, this result is skewed since we have more data points for that neighbourhood. Occupancy is defined as **30 - Availability_30**
+
+```{r plot9, include = T}
+
+plot9 <-  air_sub %>%
+          select(names(.)) %>% 
+                             ggplot(aes(x = 30-availability_30,
+                                 fill = neighbourhood_group_cleansed
+)) + geom_density( alpha = 0.4) +
+ # geom_line(size = 0.5, alpha = 0.6) +
+  scale_y_continuous(name = "Density") +
+  scale_x_continuous(name = "Occupancy within 30 Days") +
+  scale_fill_discrete(name = "Neighbourhood")
+
+ggplotly(plot9, width = 1200,height = 600)
+```
+
+* **Median Occupancy by Zipcode & Neighborhood** - This graph gives us a better picture than the previous one as it also highlights Staten Island Zipcodes which have comparable Median Occupancy.
+
+```{r plot10, include = T}
+plot10 <-  air_sub %>%
+          mutate(Occupancy = 30-availability_30) %>% 
+          select(Occupancy,zipcode,neighbourhood_group_cleansed) %>% 
+          group_by(neighbourhood_group_cleansed,zipcode) %>%
+          summarize(Med_Occ = median(Occupancy)) %>% 
+                        ggplot(aes(x = zipcode,
+                                 y = Med_Occ,
+                                 color = neighbourhood_group_cleansed
+                                ,fill = neighbourhood_group_cleansed
+)) + geom_histogram(stat = "identity") +
+ # geom_line(size = 0.5, alpha = 0.6) +
+  scale_y_continuous(name = "Median Ocupancy") +
+  scale_x_discrete(name = "Zipcode") +
+  scale_fill_discrete(name = "Neighbourhood")
+
+ggplotly(plot10 , width = 1200,height = 600)
+```
+
+# Business Definitions for Custom Attributes and Metrics
+
+The whole EDA exercise has given us very good insights into the data and highlighted potential factors which can contribute to our decision making. Following are the Metrics that we created for assessing investment opportunities. One important thing here is that we will just be considering the Median Prices for '2017-06' as our Cost of Properties. This is assumes that the investment will be immediate -
+
+* **Occupancy Opportunity(OO)** - Days within a 30 day period when the property is available for  occupation. This is generalized over a period and is assumed as a constant 
+    + Unit = Count
+    + Formula = 30 - availability_30 + 1
+    + level of calculation = Property i.e. calculated for each property
+    + Note - We added 1 to avoid infinity values during other calculations
+
+* **Occupancy Rate(OR)** - Percent of Occupied Days to Total Available Days within a 30 day period. This is generalized over a period and is assumed as a constant
+    + Unit = Percent
+    + Formula = Based on Review Score with the definition in the table below
+    + Level of Calculation = Property i.e. calculated for each property
+    + Note - The weighted mean of Review Score is ~75 and hence the default Occupancy rate was assigned to that range of Review Scores
+    
+Range of Review Score | Occupancy Rate(%)
+----------------------|---------------
+Between 0	& 65        | 55
+Between 66 & 75       | 65
+Between 76 & 85       | 75
+Between 86 & 95       | 85
+Between 96 & 100      | 95
+
+    
+
+* **Monthly Revenue Opportunity(MRO)** - Total Revenue earned from a property in a Month
+    + Unit = $ per Month    
+    + Formula = {Occupancy Rate} x {Occupancy Opportunity} x {Price per Night} / 100
+    + Level of Calculation = Property i.e. calculated for each property
+
+* **Break Even Period(BEP)** - Number of Months required for investor to reach a point in the business venture when the profit is equal to the cost
+    + Unit = Months
+    + Formula = {Median Price of Purchase} / {Monthly Revenue Opportunity}
+    + Level of Calculation = Property i.e. calculated for each property
+
+* **Median Break Even Period(MBEP)** - Median Break Even Period over Zipcode or Negihbourhood depending on the analysis
+    + Unit = Months
+    + Formula = Median for a given set of BEPs for each Zipcode or Negihbourhood
+    + level of Calculation = Zipcode or Neighborhood  i.e. calculated for each Neighborhood  or property
+    
+Below code chunk calculates the above discussed metrics and adds them to the final joined data set. Since Average Break Even Period is not at the same level as other Metrics, it will be calculated separately in the next section. The function 'Metric_calc' does the calculation for us and merges the new variables to the dataset which was given to it as input. The customized Occupancy Rate is calculated through the function 'Occ_rate'. The final results are stored in 'results'. 
+
+```{r metric, include = T}
+Occ_rate <- function(y) { 
+ if(y >= 0 & y <=	65) 	{return(0.55)} else
+ if(y >= 66 & y <=	75) 	{return(0.65)} else
+ if(y >= 76 & y <=	85) 	{return(0.75)} else
+ if(y >= 86 & y <=	95) 	{return(0.85)} else
+ if(y >= 96 & y <=	100) 	{return(0.95)} else {return(0.01)}
+}
+
+Metric_calc <- function(x) {
+  x %<>% filter(YYYY_MM == '2017-06')
+  x$OO <- 30 - x$availability_30 + 1
+  x$OR <- sapply(x$review_scores_rating, function(x) Occ_rate(x) )
+  x$MRO <- x$OR * x$price  * x$OO  
+  x$BEP <- x$Med_Price/x$MRO
+  x$BEP_Rank <- rank(x$BEP,ties.method = c("random")) 
+  return(x)
+}
+```
+
+```{r call.result,include = T}
+results <- Metric_calc(joined)
+head.cust(results)
+```
+
+# Break Even Period Analysis
+
+We will calculate the Average Break Even Period For Zipcodes and Negihbourhoods. Lesser the number, better the investment. So based on increasing order of Average Break Even Period, we will rank the Zipcodes. A lower rank means a better investment. Below graph helps us visualize our results
+
+* **Distribution of Break Even Period by Zipcode & Neighborhood**  - We see that 10305 in Staten Island and 10025 in Manhattan are probably good options for investment based on their low Median BEP and low variability.
+
+```{r plot11, include = T}
+plot11 <-  results %>%
+                               ggplot(aes(x = zipcode,
+                                 y = BEP,
+                                 color = neighbourhood_group_cleansed
+                                ,fill = neighbourhood_group_cleansed
+)) + geom_boxplot() +
+     scale_y_continuous(name = "Break Even Period ",
+            limits = quantile(results$BEP, c(0, 0.95))) +
+     scale_x_discrete(name = "Zipcode") +
+     scale_fill_discrete(name = "Neighbourhood")
+
+ggplotly(plot11 , width = 1200,height = 600)
+```
+
+* **Distribution of Ranks of Break Even Period by Zipcode & Neighborhood**  - We see that 10305 in Staten Island is still showing good potential. However, 10025 in Manhattan seem to have a lot of variablity in the ranks assigned
+
+```{r plot12, include = T}
+plot12 <-  results %>%
+                               ggplot(aes(x = zipcode,
+                                 y = BEP_Rank,
+                                 color = neighbourhood_group_cleansed
+                                ,fill = neighbourhood_group_cleansed
+)) + geom_boxplot() +
+ # geom_line(size = 0.5, alpha = 0.6) +
+ scale_y_continuous(name = "Break Even Period Rank") +
+  scale_x_discrete(name = "Zipcode") +
+  scale_fill_discrete(name = "Neighbourhood")
+
+ggplotly(plot12 , width = 1200,height = 600)
+```
+
+* **Top 10 Properties by Zipcodes Break Even Periods** - Although this level of detail is not part of the final recommendation, we would still like to see which the top 10 properties in terms of investing are. It is interesting to note that 4 out of the top 10 properties lie in 10025 Zipcode.
+
+```{r top10, include = T}
+results %>% filter(BEP_Rank < 11) %>%
+  select(zipcode,neighbourhood_group_cleansed,BEP_Rank,BEP) %>%
+  arrange(BEP_Rank) %>%   kable()  %>%
+  kable_styling(bootstrap_options = c("responsive","striped")) %>%
+  scroll_box(width = "100%", height = "200px")
+```
+
+* **Ranked Zipcodes by Average  Break Even Periods** -
+
+```{r summary, include = T}
+ temp <- results %>%
+  select(zipcode,neighbourhood_group_cleansed,BEP,BEP_Rank) %>% 
+  group_by(neighbourhood_group_cleansed,zipcode) %>% 
+  summarize(Count = n(),Avg_BEP = mean(BEP),Med_BEP = median(BEP)) %>% 
+    arrange(Med_BEP )
+
+temp$Rank <- seq(1,nrow(temp),1) 
+temp %>%   kable()  %>%
+  kable_styling(bootstrap_options = c("responsive","striped")) %>%
+  scroll_box(width = "100%", height = "200px")
+```
+
+# Recommendation
+
+* Based on Median Break Even Period, Zipcodes **11215, 11231, 11217** are the top 3 Zipcodes for investing in
+* Based on multiple properties with low Break Even Periods, we suggest investing in **10025** since it had **4 out top 10** properties
+* We have excluded Staten Island from our recommendation because it has very less properties and hence insufficient data to make concrete remarks
+* We do not recommend investing in zipcodes with less property count because of data insufficiency 
+
+# Future Scope
+
+* Lots of scope for data enrichment since we only had complete data for 22 Zipcodes
+* Sourcing data from other places can help us with the many data quality issues that we faced. For example inconsistent values of Cities in Listing data
+* A more analytically sophisticated method can be used to curate the Occupancy Rate and Available days in a month
+* Using Text mining and Sentiment Analysis on textual fields which could enable us to observe their effects on Reviews and Occupancy
+* Hierarchical Clustering can be used to group Zipcodes together based on different variables followed by summarizing the Break Even Period of the group. This could lead us to the group with best investment opportunity
+* Time Series analysis for predicting Median Cost of Properties so that we can then use them for Break Even Period Analysis
+
+# Assumptions & Considerations
+
+* I have used read_csv() for simplicity purposes. Different functions can be used based on size, ease of use, etc.
+* No profit is being made by charging the Cleaning Fee or Security Deposit
+* Since we are looking at 'short term stays', I am not considering weekly_price or monthly price. Also, we would just be considering availability_30 for similar reasons
+* All custom metrics have been assumed constant over time
+* The only source of profit is assumed to be the revenue collected from guests
+* No other costs except for the Cost of purchase of property has been considered
+* We have assumed short term stay to be less than 7 days
+
+
+**END OF DOCUMENT**

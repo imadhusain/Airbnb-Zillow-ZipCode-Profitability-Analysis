@@ -1,0 +1,9 @@
+1. Please open html file in Chrome 72+ for best viewing
+2. To view the raw code, view .rmd file in R-Studio, notepad, notepad++
+3. To test the .rmd file
+-> open it in R-Studio Version 1.1.463
+-> set file location as working directory
+-> the source files for Airbnb and Zillow data must be present in the same directory as the 
+-> knit .rmd file to html
+4. .rmd file created in R version 3.5.2 (2018-12-20), R-Studio Version 1.1.463
+5. Knitted html file tested in Chrome Version 72.0.3626.121
